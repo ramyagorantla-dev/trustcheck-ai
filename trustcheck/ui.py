@@ -196,7 +196,7 @@ def verdict(level: str, score: int, scam_type: str, summary: str, meta: str) -> 
     c = VERDICT[level]
     headline = {"high": "This looks like a scam", "medium": "Be careful with this one",
                 "low": "No strong warning signs"}[level]
-    kind = "" if not scam_type or scam_type.lower() in ("none detected", "unknown", "none") else \
+    kind = "" if level == "low" or not scam_type or scam_type.lower() in ("none detected", "unknown", "none") else \
         f"Looks like: {html.escape(scam_type)} &nbsp;|&nbsp; "
     body = html.escape(summary) if summary else VERDICT_LINE[level]
     return f"""
@@ -214,10 +214,10 @@ def verdict(level: str, score: int, scam_type: str, summary: str, meta: str) -> 
 _QUOTE = re.compile(r'["“]([^"”]{3,90})["”]')
 
 
-def flagged_phrases(evidence: list[str], tool_results: list[dict], raw: str) -> list[str]:
-    """Collect the exact phrases/domains that tools flagged, to highlight them in the message."""
+def flagged_phrases(evidence: list[str], tool_results: list[dict], raw: str, level: str = "high") -> list[str]:
+    """Collect the exact phrases/domains that were flagged, to highlight them in the message."""
     out: list[str] = []
-    texts = list(evidence)
+    texts = list(evidence) if level != "low" else []
     for r in tool_results or []:
         for f in r.get("findings", []):
             if f.get("severity") in ("high", "medium", "low"):
@@ -230,7 +230,7 @@ def flagged_phrases(evidence: list[str], tool_results: list[dict], raw: str) -> 
     low = raw.lower()
     for p in sorted(out, key=len, reverse=True):
         k = p.strip().lower()
-        if len(k) >= 3 and k not in seen and k in low:
+        if len(k) >= 3 and k not in seen and k in low and len(k) < 0.6 * max(len(low), 1):
             seen.add(k)
             phrases.append(p.strip())
     return phrases[:20]
@@ -521,3 +521,121 @@ class Board:
         return (f'<div class="tc-board" role="status" aria-live="polite"><div class="tc-board-head"><b>{html.escape(head)}</b>'
                 f'<span>Case {self.case}</span></div><div class="tc-progress"><i style="width:{pct}%"></i></div>'
                 f'<div class="tc-cards">{cards}</div></div>')
+
+
+# ================================================================== "decide in 10 seconds" guide
+# Some answers depend on what only the user knows (did YOU request this code?). Instead of guessing,
+# TrustCheck asks the one or two questions that settle it, with a clear action for each answer.
+DECISION_GUIDES = [
+    ("code", re.compile(r"(verification|security|login|sign-?in|one[- ]time|2fa|access)\s+code|passcode|\botp\b", re.I), [
+        ("Did you just try to sign in, reset a password, or ask for this code?",
+         "That's normal. Type the code only into the official app or website you opened yourself.",
+         "Someone may be trying to get into your account. Don't share the code with anyone, change your password, "
+         "and turn on 2-step verification."),
+        ("Is anyone (a caller, a text, a 'friend') asking you to read or send them the code?",
+         "Stop. No real company or friend needs your code. This is how accounts get stolen.",
+         "Good. Keep it that way: a code is like a key to your account."),
+    ]),
+    ("delivery", re.compile(r"\b(package|parcel|shipment|delivery|tracking|usps|fedex|ups|dhl)\b", re.I), [
+        ("Are you expecting a package, and do you have a tracking number from the store you ordered from?",
+         "Check the status only on the carrier's own website or app, using that tracking number.",
+         "Ignore it and delete it. You can forward scam texts to 7726 (SPAM)."),
+        ("Does it ask you to pay a fee or enter card details to release the package?",
+         "That's a scam sign. Carriers don't collect surprise fees through text links.",
+         "Still check through the carrier's official site rather than the link in the message."),
+    ]),
+    ("bank", re.compile(r"\b(bank|card ending|charge|transaction|purchase of|debit|credit card|account (is )?(locked|limited|suspended))\b", re.I), [
+        ("Do you recognize the activity or transaction it mentions?",
+         "Fine. You can still double-check by opening your bank's app yourself.",
+         "Call the number on the back of your card. Don't use any number or link in the message."),
+        ("Is it asking for your password, PIN, full card number, or a code?",
+         "That's a scam sign. Banks never ask for these by text or email.",
+         "Good. Check the alert inside your bank's app to be sure."),
+    ]),
+    ("job", re.compile(r"\b(job|offer|position|recruit|hiring|interview|intern(ship)?|salary|onboard)\w*", re.I), [
+        ("Did you apply for this role and speak with a real person by phone or video?",
+         "Good sign. Still confirm the recruiter's email ends in the company's real domain.",
+         "Be very careful. Real offers come after real interviews, not out of the blue."),
+        ("Are they asking for money, an equipment purchase, a check deposit, or your bank/SSN details before you've signed anything?",
+         "That's a scam. Real employers never ask you to pay or deposit their checks.",
+         "Good. Confirm the job on the company's official careers website before you share documents."),
+    ]),
+]
+GENERIC_GUIDE = [
+    ("Were you expecting this message from this sender?",
+     "Good sign. Still check anything important through the official app or website.",
+     "Unexpected messages are the most common way scams start. Slow down."),
+    ("Is it asking for money, a code, a password, or personal details?",
+     "Don't send anything until you confirm it through a number or website you find yourself.",
+     "Lower risk. If anything changes, check again."),
+]
+
+
+def decision_guide(raw: str) -> tuple[str, list]:
+    for name, rx, qs in DECISION_GUIDES:
+        if rx.search(raw or ""):
+            return name, qs
+    return "general", GENERIC_GUIDE
+
+
+DECIDE_CSS = f"""
+<style>
+.tc-decide {{ display:grid; gap:0.8rem; margin:0.3rem 0 1.4rem; }}
+.tc-q {{ background:#FFFFFF; border:1px solid {RULE}; border-radius:10px; padding:0.9rem 1.1rem; }}
+.tc-q > b {{ display:block; font-family:'Bricolage Grotesque', sans-serif; font-size:1.05rem; margin-bottom:0.6rem; }}
+.tc-ans {{ display:grid; grid-template-columns:1fr 1fr; gap:0.7rem; }}
+.tc-ans div {{ border-radius:8px; padding:0.6rem 0.75rem; font-size:0.95rem; line-height:1.45; }}
+.tc-ans .safe {{ background:#F0FAF4; border-left:4px solid {VERDICT['low']}; }}
+.tc-ans .risk {{ background:#FFF6F5; border-left:4px solid {VERDICT['high']}; }}
+.tc-ans i {{ font-style:normal; font-weight:700; display:block; margin-bottom:0.15rem; }}
+@media (max-width:720px) {{ .tc-ans {{ grid-template-columns:1fr; }} }}
+</style>
+"""
+
+
+def decision_html(raw: str) -> str:
+    """Color follows the meaning of each answer (safe vs warning), never the word yes/no.
+    In every guide, question 1's risky answer is "no" and question 2's risky answer is "yes"."""
+    _, qs = decision_guide(raw)
+    cards = []
+    for i, (q, y, n) in enumerate(qs):
+        risky = "no" if i == 0 else "yes"
+        ycls, ncls = ("risk", "safe") if risky == "yes" else ("safe", "risk")
+        yi = "⚠️ If yes" if risky == "yes" else "✓ If yes"
+        ni = "⚠️ If no" if risky == "no" else "✓ If no"
+        cards.append(f'<div class="tc-q"><b>{html.escape(q)}</b><div class="tc-ans">'
+                     f'<div class="{ycls}"><i>{yi}</i>{html.escape(y)}</div>'
+                     f'<div class="{ncls}"><i>{ni}</i>{html.escape(n)}</div></div></div>')
+    return f'<div class="tc-decide">{"".join(cards)}</div>'
+
+
+
+# ================================================================== compact results
+def board_summary(board: "Board") -> str:
+    checks = [c for c in board.cards if not c["key"].startswith("think:")]
+    flags = sum(1 for c in checks if c["state"] == "flagged")
+    color = VERDICT["high"] if flags else VERDICT["low"]
+    icon = "!" if flags else "✓"
+    text = (f"Case closed: {len(checks)} checks, {flags} raised a flag" if flags
+            else f"Case closed: {len(checks)} checks, none raised a flag")
+    return (f'<div class="tc-board" style="display:flex;align-items:center;gap:0.7rem;padding:0.7rem 1.1rem">'
+            f'<span style="width:1.4rem;height:1.4rem;border-radius:50%;background:{color};color:#fff;display:grid;'
+            f'place-items:center;font-weight:800;font-size:0.8rem">{icon}</span>'
+            f'<b style="font-family:\'Bricolage Grotesque\',sans-serif">{html.escape(text)}</b>'
+            f'<span style="margin-left:auto;color:#52607A;font-size:0.9rem">Case {board.case}</span></div>')
+
+
+def findings_html(report, events: list[dict]) -> str:
+    """Risky: the evidence list. Low risk: a plain statement of what was checked, not the AI's speculation."""
+    if report.risk_level != "low":
+        return evidence_list(report.evidence, report.risk_level)
+    steps = [t for t in timeline_steps(events) if t[0] != "info"]
+    names = [t[1][0].lower() + t[1][1:] for t in steps]
+    checked = ", ".join(names[:-1]) + (" and " + names[-1] if len(names) > 1 else (names[0] if names else ""))
+    real_flags = [t for t in timeline_steps(events) if t[0] == "flagged"]
+    if real_flags:
+        return evidence_list([f"{t[1]}: {t[2]}" for t in real_flags], "medium")
+    body = (f"We checked {checked}. Nothing suspicious came up." if checked
+            else "Nothing suspicious came up in the checks we ran.")
+    return (f'<ul class="tc-evidence" style="--dot:{VERDICT["low"]}"><li>{html.escape(body)} '
+            f'That means no warning signs, not proof it\'s genuine, so use the questions above if you\'re unsure.</li></ul>')

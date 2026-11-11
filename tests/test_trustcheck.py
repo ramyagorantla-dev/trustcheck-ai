@@ -232,3 +232,41 @@ def test_investigation_board_states():
     board.close(rep.risk_level)
     out = board.html()
     assert "Case closed" in out and "flagged" in out and ' run"' not in out
+
+
+def test_decision_guide_matches_message_type():
+    from trustcheck import ui
+    assert ui.decision_guide("Your Google verification code is 482913.")[0] == "code"
+    assert ui.decision_guide("USPS: your package is on hold")[0] == "delivery"
+    assert ui.decision_guide("Chase: a charge of $54.20 on your card ending 4421")[0] == "bank"
+    assert ui.decision_guide("We are pleased to offer you the position")[0] == "job"
+    assert ui.decision_guide("Hey, lunch tomorrow?")[0] == "general"
+
+
+def test_low_risk_message_is_not_highlighted():
+    from trustcheck import ui
+    raw = "Your Google verification code is 482913. Don't share this code with anyone."
+    ai_evidence = ['"Your Google verification code is 482913. Don\'t share this code with anyone."']
+    assert ui.flagged_phrases(ai_evidence, [], raw, level="low") == []
+    assert "possible phishing" not in ui.verdict("low", 30, "possible phishing", "", "sms")
+
+
+def test_decision_colors_follow_meaning_not_yes_no():
+    from trustcheck import ui
+    h = ui.decision_html("Your verification code is 123456")
+    q1, q2 = h.split('<div class="tc-q">')[1:3]
+    assert '<div class="safe"><i>✓ If yes' in q1 and '<div class="risk"><i>⚠️ If no' in q1
+    assert '<div class="risk"><i>⚠️ If yes' in q2 and '<div class="safe"><i>✓ If no' in q2
+
+
+def test_low_risk_findings_are_plain_and_board_collapses():
+    from trustcheck import ui
+    ev = []
+    r = rules_only("Your Google verification code is 482913. Don't share this code with anyone.", on_event=ev.append)
+    f = ui.findings_html(r, ev)
+    assert "Nothing suspicious came up" in f and "hidden AI instructions" in f
+    b = ui.Board("TC-X")
+    for e in ev:
+        b.update(e)
+    b.close(r.risk_level)
+    assert "none raised a flag" in ui.board_summary(b)

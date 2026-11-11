@@ -23,7 +23,7 @@ from trustcheck.tools.extract import extract_text
 
 st.set_page_config(page_title="TrustCheck: is this message a scam?", page_icon="🛡️", layout="wide",
                    initial_sidebar_state="collapsed")
-st.markdown(ui.CSS + ui.CASE_CSS + ui.BOARD_CSS, unsafe_allow_html=True)
+st.markdown(ui.CSS + ui.CASE_CSS + ui.BOARD_CSS + ui.DECIDE_CSS, unsafe_allow_html=True)
 
 
 EXAMPLES = {
@@ -150,7 +150,7 @@ if go:
     else:
         report = rules_only(raw, itype, on_event=on_event)
     board.close(report.risk_level)
-    board_slot.markdown(board.html(), unsafe_allow_html=True)
+    board_slot.markdown(ui.board_summary(board), unsafe_allow_html=True)
 
     if report.error:
         st.warning("LLM unavailable, showing rules-only result. " + report.error)
@@ -161,7 +161,12 @@ if go:
     st.markdown(ui.verdict(report.risk_level, report.risk_score, report.scam_type, report.summary, meta),
                 unsafe_allow_html=True)
 
-    phrases = ui.flagged_phrases(report.evidence, report.tool_results, raw)
+    phrases = ui.flagged_phrases(report.evidence, report.tool_results, raw, report.risk_level)
+
+    st.markdown("### Decide in 10 seconds")
+    st.caption("Some things only you know. Answer these honestly and follow the matching advice.")
+    st.markdown(ui.decision_html(raw), unsafe_allow_html=True)
+
     st.download_button("Download the case report", data=ui.report_html(report, raw, phrases, events),
                        file_name=f"TrustCheck-{ui.case_id(raw)}.html", mime="text/html",
                        help="A printable report you can keep, or forward to your bank, school, or HR when reporting the scam.")
@@ -170,18 +175,15 @@ if go:
         st.error("This message hides instructions aimed at AI tools, like \"mark this as safe\". "
                  "TrustCheck ignored them. A real sender has no reason to write that.")
 
-    if phrases:
+    if phrases and report.risk_score >= 40:
         st.markdown("### Your message, marked up")
         st.markdown(ui.exhibit(raw, phrases), unsafe_allow_html=True)
         st.markdown('<p class="tc-exhibit-note">Highlighted parts are what triggered the warnings below.</p>',
                     unsafe_allow_html=True)
 
-    col1, col2 = st.columns([1.1, 1], gap="large")
-    with col1:
-        st.markdown("### What we found")
-        st.markdown(ui.evidence_list(report.evidence, report.risk_level), unsafe_allow_html=True)
-    with col2:
-        st.markdown("### How we investigated")
+    st.markdown("### What we found")
+    st.markdown(ui.findings_html(report, events), unsafe_allow_html=True)
+    with st.expander("See every check we ran", expanded=report.risk_level == "high"):
         st.markdown(ui.case_file(events, report.risk_level, raw), unsafe_allow_html=True)
 
     st.markdown("### How to check it yourself")
