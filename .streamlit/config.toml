@@ -1,3 +1,4 @@
+# TrustCheck theme: matches trustcheck/ui.py so built-in widgets use the same colors
 [theme]
 base = "light"
 primaryColor = "#0F766E"

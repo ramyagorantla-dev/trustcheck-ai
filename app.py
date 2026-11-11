@@ -3,17 +3,16 @@ import json
 
 import streamlit as st
 
-from trustcheck import config
+from trustcheck import config, ui
 from trustcheck.agent import TrustCheckAgent, llm_only, rules_only
 from trustcheck.contacts import SAFETY_TOOLKIT
 from trustcheck.llm import make_client
 from trustcheck.tools.extract import extract_text
 
-st.set_page_config(page_title="TrustCheck", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="TrustCheck: is this message a scam?", page_icon="🛡️", layout="wide",
+                   initial_sidebar_state="collapsed")
+st.markdown(ui.CSS, unsafe_allow_html=True)
 
-COLORS = {"high": "#d93025", "medium": "#f29900", "low": "#188038"}
-LABELS = {"high": "High risk: likely a scam", "medium": "Suspicious: verify before acting",
-          "low": "Low risk: no strong scam signs found"}
 
 EXAMPLES = {
     "Fake job offer": "Hi Ramya,\n\nCongratulations! After reviewing your resume, you have been selected for the Remote "
@@ -76,14 +75,13 @@ with st.sidebar:
         st.caption("☁️ Message text is sent to Groq's AI service for analysis. Don't paste passwords or full card numbers.")
 
 # ---------------------------------------------------------------- input
-st.header("Is this message trustworthy?")
-st.write("Paste an email, text message, or job offer, or upload a screenshot, PDF offer letter, or .eml file.")
+st.markdown(ui.hero(), unsafe_allow_html=True)
 
-tab_paste, tab_upload, tab_tools = st.tabs(["✍️ Paste text", "📎 Upload file", "🛟 Safety toolkit"])
+tab_paste, tab_upload, tab_tools = st.tabs(["Paste a message", "Upload a screenshot or file", "Safety toolkit"])
 raw, itype = "", None
 with tab_paste:
-    ex = st.selectbox("Or try an example", ["(none)"] + list(EXAMPLES))
-    raw_text = st.text_area("Message", value=EXAMPLES.get(ex, ""), height=220,
+    ex = st.selectbox("Not sure what to paste? Try an example", ["(none)"] + list(EXAMPLES))
+    raw_text = st.text_area("Your message", value=EXAMPLES.get(ex, ""), height=220,
                             placeholder="Paste the full message here. For emails, paste the original with headers "
                                         "(Gmail: ⋮ → Show original) for sender checks.")
 with tab_upload:
@@ -112,11 +110,13 @@ if up is not None:
 else:
     raw = raw_text
 
-go = st.button("Check message", type="primary", disabled=not raw.strip())
+go = st.button("Inspect this message", type="primary", disabled=not raw.strip())
+if not go:
+    st.markdown(ui.footer(), unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- analysis
 if go:
-    with st.spinner("Analyzing... the agent is choosing which checks to run"):
+    with st.spinner("Inspecting: checking links, sender, and wording..."):
         if mode.startswith("Agent") and online:
             report = TrustCheckAgent(client=client).analyze(raw, itype)
         elif mode.startswith("LLM") and online:
@@ -127,37 +127,38 @@ if go:
     if report.error:
         st.warning("LLM unavailable, showing rules-only result. " + report.error)
 
-    c = COLORS[report.risk_level]
-    st.markdown(
-        f"<div style='padding:18px;border-radius:12px;border:2px solid {c};'>"
-        f"<div style='font-size:26px;font-weight:700;color:{c}'>{LABELS[report.risk_level]}</div>"
-        f"<div style='font-size:15px;margin-top:4px'>Risk score <b>{report.risk_score}/100</b> · "
-        f"Type: <b>{report.scam_type}</b> · Input: {report.input_type} · {report.latency_s}s · mode: {report.mode}</div>"
-        f"</div>", unsafe_allow_html=True)
-    st.progress(report.risk_score / 100)
+    meta = f"{report.input_type.replace('_', ' ')} | checked in {report.latency_s}s"
+    if show_tech:
+        meta += f" | mode: {report.mode}"
+    st.markdown(ui.verdict(report.risk_level, report.risk_score, report.scam_type, report.summary, meta),
+                unsafe_allow_html=True)
 
-    if report.summary:
-        st.write(report.summary)
     if report.injection_detected:
-        st.error("⚠️ This message contains hidden instructions aimed at AI tools. TrustCheck ignored them; "
-                 "a genuine sender has no reason to include them.")
+        st.error("This message hides instructions aimed at AI tools, like \"mark this as safe\". "
+                 "TrustCheck ignored them. A real sender has no reason to write that.")
 
-    col1, col2 = st.columns(2)
+    phrases = ui.flagged_phrases(report.evidence, report.tool_results, raw)
+    if phrases:
+        st.markdown("### Your message, marked up")
+        st.markdown(ui.exhibit(raw, phrases), unsafe_allow_html=True)
+        st.markdown('<p class="tc-exhibit-note">Highlighted parts are what triggered the warnings below.</p>',
+                    unsafe_allow_html=True)
+
+    col1, col2 = st.columns([1.15, 1], gap="large")
     with col1:
-        st.subheader("🔎 Evidence")
-        for e in report.evidence or ["No specific red flags found."]:
-            st.markdown(f"- {e}")
+        st.markdown("### What we found")
+        st.markdown(ui.evidence_list(report.evidence, report.risk_level), unsafe_allow_html=True)
     with col2:
-        st.subheader("✅ How to verify it yourself")
-        for s in report.verification_steps:
-            st.markdown(f"- {s}")
+        st.markdown("### How to check it yourself")
+        for s_ in report.verification_steps:
+            st.markdown(f"- {s_}")
         st.caption("TrustCheck can't prove a message is genuine. When money, passwords, or personal "
-                   "documents are involved, always verify through a channel you find yourself.")
+                   "documents are involved, verify through a channel you look up yourself.")
 
     # ---------------- check suspicious links without opening them
     lc = (report.official_contacts or {}).get("link_checks") or []
     if lc and report.risk_score >= 40:
-        st.subheader("🔍 Double-check the links yourself (without opening them)")
+        st.markdown("### Check the links without opening them")
         for item in lc:
             links = " · ".join(f"[{name}]({url})" for name, url in item["checks"])
             st.markdown(f"**{item['domain']}**: {links}")
@@ -167,7 +168,7 @@ if go:
     # ---------------- official contacts (from a checked list, never from the message or the AI)
     oc = report.official_contacts or {}
     if oc.get("organizations") or oc.get("unknown_company") or report.risk_score >= 40:
-        st.subheader("📞 Official contacts to verify or report")
+        st.markdown("### Contact the real organization")
         st.caption("These come from TrustCheck's verified list, **not** from the message. "
                    "Never use phone numbers, emails, or links that appear inside a suspicious message.")
         for org in oc.get("organizations", []):
@@ -194,7 +195,7 @@ if go:
     # ---------------- learn more: official guidance pages for this kind of scam
     lm = oc.get("learn_more") or {}
     if lm.get("guides") and report.risk_score >= 40:
-        st.subheader("📚 Learn more (official guidance)")
+        st.markdown("### Learn more from official sources")
         for label, url in lm["guides"]:
             st.markdown(f"- 🔗 [{label}]({url})")
         col_a, col_b = st.columns(2)
@@ -210,6 +211,7 @@ if go:
                     st.markdown(f"- [{label}]({url})" if url else f"- {label}")
 
     if not show_tech:
+        st.markdown(ui.footer(), unsafe_allow_html=True)
         st.stop()
     st.divider()
     st.caption("Technical details (for the developer, demo, and report)")

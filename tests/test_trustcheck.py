@@ -168,3 +168,11 @@ def test_link_checkers_use_domain_only():
     lc = link_checkers(["https://usps-redeliver.top/track?id=123&name=ramya"])
     assert lc[0]["domain"] == "usps-redeliver.top"
     assert all("ramya" not in url for _, url in lc[0]["checks"])   # no personal data leaks to the checker
+
+
+def test_exhibit_highlights_are_balanced_and_safe():
+    from trustcheck import ui
+    raw = "Contact hr.x@gmail.com <script>alert(1)</script> gmail.com"
+    h = ui.exhibit(raw, ["hr.x@gmail.com", "gmail.com"])
+    assert h.count("<mark>") == h.count("</mark>")
+    assert "<script>" not in h          # message text is escaped, never run as HTML

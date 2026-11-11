@@ -83,7 +83,7 @@ python eval/make_testset.py                              # build the labeled tes
 python eval/run_eval.py                                  # baselines only (no LLM needed)
 python eval/run_eval.py --llm                            # + LLM-only and full agent
 python eval/run_eval.py --llm --models qwen2.5:3b qwen2.5:7b llama3.1:8b   # compare models
-python -m pytest -q                                      # unit tests (17)
+python -m pytest -q                                      # unit tests (18)
 ```
 
 **Test set:** 42 synthetic, labeled messages (22 scam / 20 legitimate) across SMS, email (with headers) and job offers, including deliberately hard cases: genuine-but-urgent alerts, a real 2FA code message, scams with **no links** (boss gift-card request, BEC wire fraud), and **prompt-injection** attacks.
