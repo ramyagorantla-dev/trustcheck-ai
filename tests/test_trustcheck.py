@@ -176,3 +176,59 @@ def test_exhibit_highlights_are_balanced_and_safe():
     h = ui.exhibit(raw, ["hr.x@gmail.com", "gmail.com"])
     assert h.count("<mark>") == h.count("</mark>")
     assert "<script>" not in h          # message text is escaped, never run as HTML
+
+
+# ------------------------------------------------------------------ red-team defense
+def test_normalize_undoes_disguises():
+    from trustcheck.tools.normalize import normalize
+    assert normalize("Buy g1ft c4rds and v3rify your p@ssword") == "Buy gift cards and verify your password"
+    assert normalize("gi​ft ca​rd") == "gift card"
+    assert normalize("pаssword") == "password"          # Cyrillic а
+
+
+def test_normalize_leaves_real_numbers_alone():
+    from trustcheck.tools.normalize import detect_obfuscation, normalize
+    legit = "Your code is 482913. Pay is $45/hr. Form I-9, CS 5800, covid19."
+    assert normalize(legit) == legit
+    assert not detect_obfuscation(legit)["detected"]
+
+
+def test_disguised_scam_is_still_caught():
+    import random
+    import eval.redteam as rt
+    scam = "Hi, it's your manager. Please buy gift cards urgently and keep this confidential."
+    for attack in (rt.leetspeak, rt.homoglyphs, rt.invisible_chars):
+        disguised = attack(scam, random.Random(1))
+        assert disguised != scam
+        assert rules_only(disguised).is_scam, attack.__name__
+
+
+def test_email_addresses_are_not_treated_as_disguises():
+    from trustcheck.tools.normalize import detect_obfuscation, normalize
+    t = "Contact hr.deloitte.careers@gmail.com or visit https://x.com/a1b2"
+    assert not detect_obfuscation(t)["detected"]
+    assert "careers@gmail.com" in normalize(t)
+
+
+def test_live_events_and_case_file():
+    from trustcheck import ui
+    events = []
+    rep = rules_only("USPS: package on hold, update within 24 hours at usps-redeliver.top", on_event=events.append)
+    steps = ui.timeline_steps(events)
+    assert any(s[0] == "flagged" for s in steps)
+    html_report = ui.report_html(rep, "USPS: package on hold <script>x</script>", [], events)
+    assert "<script>x" not in html_report and "TrustCheck case report" in html_report
+
+
+def test_investigation_board_states():
+    from trustcheck import ui
+    events = []
+    rep = rules_only("Buy gift cards urgently and keep this confidential", on_event=events.append)
+    board = ui.Board("TC-TEST")
+    board.update({"kind": "thinking", "name": "", "result": {}, "text": "Reading the message"})
+    for e in events:
+        board.update(e)
+    assert "Investigating" in board.html()
+    board.close(rep.risk_level)
+    out = board.html()
+    assert "Case closed" in out and "flagged" in out and ' run"' not in out

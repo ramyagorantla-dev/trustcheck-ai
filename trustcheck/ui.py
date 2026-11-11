@@ -267,3 +267,257 @@ def evidence_list(items: list[str], level: str) -> str:
     dot = VERDICT[level] if items else VERDICT["low"]
     lis = "".join(f"<li>{html.escape(i)}</li>" for i in items) or "<li>No specific red flags found.</li>"
     return f'<ul class="tc-evidence" style="--dot:{dot}">{lis}</ul>'
+
+
+# ================================================================== live investigation + case file
+import hashlib
+from datetime import datetime
+
+TOOL_LABELS = {
+    "detect_prompt_injection": ("Looking for hidden instructions aimed at AI tools", "Hidden AI instructions"),
+    "detect_obfuscation": ("Looking for disguised words", "Disguised words"),
+    "scan_text_signals": ("Reading the wording for pressure tactics", "Wording and pressure tactics"),
+    "analyze_links": ("Scanning every link and website name", "Links and websites"),
+    "analyze_email_headers": ("Checking the sender's email server", "Sender authenticity"),
+    "check_job_offer": ("Checking recruiter red flags", "Job offer checks"),
+    "search_scam_knowledge": ("Comparing with known scam patterns", "Known scam patterns"),
+}
+
+
+def _flags(result: dict) -> list[dict]:
+    return [f for f in result.get("findings", []) if f.get("severity") in ("high", "medium", "low")]
+
+
+def summarize(name: str, result: dict) -> tuple[str, str]:
+    """(state, one-line summary) for a finished check. state: flagged | clear | info"""
+    if name == "search_scam_knowledge":
+        m = result.get("matches") or []
+        return ("info", f"Closest known pattern: {m[0]['title']}") if m else ("info", "No close match in the scam library")
+    flags = _flags(result)
+    if not flags:
+        if name == "analyze_links" and not result.get("urls"):
+            return "info", "No links in the message"
+        if name == "analyze_email_headers" and any(f["signal"] == "no_headers" for f in result.get("findings", [])):
+            return "info", "No email headers to check"
+        return "clear", "Nothing suspicious found"
+    top = sorted(flags, key=lambda f: {"high": 0, "medium": 1, "low": 2}[f["severity"]])[0]
+    detail = top["detail"].split(" — ")[-1] if " — " in top["detail"] else top["detail"]
+    more = f" (+{len(flags) - 1} more)" if len(flags) > 1 else ""
+    return "flagged", detail[:140] + more
+
+
+def live_line(event: dict) -> str | None:
+    """Markdown line shown inside the live status box while the agent works."""
+    k, n = event["kind"], event["name"]
+    if k == "thinking":
+        return f"🧠 {event['text']}…"
+    if k == "tool_done" and n in TOOL_LABELS:
+        state, text = summarize(n, event["result"])
+        icon = {"flagged": "🚩", "clear": "✅", "info": "🔎"}[state]
+        return f"{icon} **{TOOL_LABELS[n][1]}**: {text}"
+    return None
+
+
+def case_id(raw: str) -> str:
+    return "TC-" + hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()[:6].upper()
+
+
+def timeline_steps(events: list[dict]) -> list[tuple[str, str, str]]:
+    steps, seen = [], set()
+    for e in events:
+        if e["kind"] == "tool_done" and e["name"] in TOOL_LABELS and e["name"] not in seen:
+            seen.add(e["name"])
+            state, text = summarize(e["name"], e["result"])
+            steps.append((state, TOOL_LABELS[e["name"]][1], text))
+    return steps
+
+
+def case_file(events: list[dict], level: str, raw: str, when: datetime | None = None) -> str:
+    when = when or datetime.now()
+    steps = timeline_steps(events)
+    n_flag = sum(1 for s in steps if s[0] == "flagged")
+    lis = "".join(
+        f'<li class="tc-step tc-{state}"><b>{html.escape(title)}</b><span>{html.escape(text)}</span></li>'
+        for state, title, text in steps)
+    lis += (f'<li class="tc-step tc-final" style="--v:{VERDICT[level]}"><b>Verdict</b>'
+            f'<span>{STAMP_TEXT[level].capitalize()}, based on {n_flag} of {len(steps)} checks raising a flag</span></li>')
+    return f"""
+<section class="tc-case" aria-label="Investigation timeline">
+  <header><span class="tc-case-id">Case {case_id(raw)}</span><span>{when.strftime('%b %d, %Y at %I:%M %p')}</span></header>
+  <ol class="tc-timeline">{lis}</ol>
+</section>"""
+
+
+CASE_CSS = f"""
+<style>
+.tc-case {{ background:#FFFFFF; border:1px solid {RULE}; border-radius:8px; padding:1rem 1.2rem 0.6rem; }}
+.tc-case header {{ display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap; color:#52607A;
+  font-size:0.9rem; padding-bottom:0.6rem; border-bottom:1px dashed {RULE}; margin-bottom:0.6rem; }}
+.tc-case-id {{ font-family:'Bricolage Grotesque', sans-serif; font-weight:800; color:{INK}; letter-spacing:0.02em; }}
+.tc-timeline {{ list-style:none; margin:0; padding:0 0 0 1.4rem; position:relative; }}
+.tc-timeline::before {{ content:""; position:absolute; left:0.42rem; top:0.5rem; bottom:0.9rem; width:2px; background:{RULE}; }}
+.tc-step {{ position:relative; padding:0.35rem 0 0.75rem 0.6rem; display:flex; flex-direction:column; gap:0.1rem; }}
+.tc-step::before {{ content:""; position:absolute; left:-1.32rem; top:0.55rem; width:12px; height:12px; border-radius:50%;
+  background:#FFFFFF; border:3px solid #9AA6BC; }}
+.tc-step b {{ font-family:'Bricolage Grotesque', sans-serif; font-size:1rem; }}
+.tc-step span {{ color:#33415C; font-size:0.95rem; }}
+.tc-flagged::before {{ border-color:{VERDICT['high']}; background:{VERDICT['high']}; }}
+.tc-flagged b::after {{ content:" flagged"; font-family:'Atkinson Hyperlegible', sans-serif; font-weight:700;
+  font-size:0.78rem; color:{VERDICT['high']}; margin-left:0.4rem; }}
+.tc-clear::before {{ border-color:{VERDICT['low']}; }}
+.tc-clear b::after {{ content:" clear"; font-family:'Atkinson Hyperlegible', sans-serif; font-weight:700;
+  font-size:0.78rem; color:{VERDICT['low']}; margin-left:0.4rem; }}
+.tc-final::before {{ border-color:var(--v); background:var(--v); width:16px; height:16px; left:-1.45rem; }}
+.tc-final b {{ color:var(--v); }}
+.tc-steps-verify {{ counter-reset:v; list-style:none; padding:0; margin:0; }}
+.tc-steps-verify li {{ counter-increment:v; position:relative; padding:0.55rem 0 0.55rem 2.4rem; border-bottom:1px solid {RULE}; }}
+.tc-steps-verify li::before {{ content:counter(v); position:absolute; left:0; top:0.5rem; width:1.7rem; height:1.7rem;
+  border-radius:50%; background:{TEAL}; color:#FFFFFF; display:grid; place-items:center; font-weight:700; font-size:0.9rem; }}
+</style>
+"""
+
+
+def verify_list(steps: list[str]) -> str:
+    return '<ol class="tc-steps-verify">' + "".join(f"<li>{html.escape(s)}</li>" for s in steps) + "</ol>"
+
+
+def report_html(report, raw: str, phrases: list[str], events: list[dict], when: datetime | None = None) -> str:
+    """A standalone, printable case report users can save or forward when reporting a scam."""
+    when = when or datetime.now()
+    oc = report.official_contacts or {}
+    orgs = "".join(
+        f"<li><b>{html.escape(o['name'])}</b>: official site {html.escape(o['website'])}"
+        + (f"; report scams to {html.escape(o['report'])}" if o.get("report") else "") + "</li>"
+        for o in oc.get("organizations", []))
+    general = "".join(f"<li>{html.escape(l)}" + (f": {html.escape(u)}" if u else "") + "</li>"
+                      for l, u in oc.get("general", []))
+    meta = f"{report.input_type.replace('_', ' ')} | {len(timeline_steps(events))} checks"
+    body = f"""
+<div class="block-container" style="max-width:860px;margin:0 auto;padding:2rem 1.5rem">
+  <p class="tc-brand">TrustCheck case report</p>
+  {verdict(report.risk_level, report.risk_score, report.scam_type, report.summary, meta)}
+  <h3>The message, marked up</h3>{exhibit(raw, phrases)}
+  <h3>What we found</h3>{evidence_list(report.evidence, report.risk_level)}
+  <h3>Investigation</h3>{case_file(events, report.risk_level, raw, when)}
+  <h3>How to check it yourself</h3>{verify_list(report.verification_steps)}
+  {"<h3>Official contacts</h3><ul>" + orgs + "</ul>" if orgs else ""}
+  {"<h3>Where to report scams (U.S.)</h3><ul>" + general + "</ul>" if general and report.risk_score >= 40 else ""}
+  <p class="tc-exhibit-note" style="margin-top:2rem">Generated by TrustCheck on {when.strftime('%B %d, %Y at %I:%M %p')}.
+  TrustCheck flags risk; it cannot prove a message is genuine. Verify through official channels you look up yourself.</p>
+</div>"""
+    return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+            f"<title>TrustCheck {case_id(raw)}</title>{CSS}{CASE_CSS}"
+            "<style>body{margin:0} @media print{.tc-stamp{animation:none}}</style></head>"
+            f"<body class='stApp'>{body}</body></html>")
+
+
+# ================================================================== animated investigation board
+BOARD_CSS = f"""
+<style>
+.tc-board {{ background:#FFFFFF; border:1px solid {RULE}; border-radius:12px; padding:1.1rem 1.3rem 1.2rem;
+  margin:0.4rem 0 1.2rem; }}
+.tc-board-head {{ display:flex; justify-content:space-between; align-items:baseline; gap:1rem; flex-wrap:wrap; }}
+.tc-board-head b {{ font-family:'Bricolage Grotesque', sans-serif; font-size:1.15rem; }}
+.tc-board-head span {{ color:#52607A; font-size:0.9rem; }}
+.tc-progress {{ height:6px; background:#E9EEF5; border-radius:99px; margin:0.8rem 0 1rem; overflow:hidden; }}
+.tc-progress i {{ display:block; height:100%; background:{TEAL}; border-radius:99px; transition:width 300ms ease; }}
+.tc-cards {{ display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:0.7rem; }}
+.tc-card {{ position:relative; border:1px solid {RULE}; border-radius:10px; padding:0.7rem 0.8rem 0.75rem 2.6rem;
+  background:#FBFCFE; min-height:4.6rem; overflow:hidden; }}
+.tc-card b {{ display:block; font-family:'Bricolage Grotesque', sans-serif; font-size:0.98rem; }}
+.tc-card span {{ display:block; color:#52607A; font-size:0.86rem; line-height:1.35; margin-top:0.15rem; }}
+.tc-card::before {{ content:""; position:absolute; left:0.8rem; top:0.85rem; width:1.15rem; height:1.15rem; border-radius:50%;
+  border:2.5px solid #9AA6BC; box-sizing:border-box; display:grid; place-items:center; }}
+/* running: pulsing ring + scanning shimmer */
+.tc-card.run {{ border-color:{TEAL}; background:#F2FBFA; }}
+.tc-card.run::before {{ border-color:{TEAL}; animation:tc-pulse 1s ease-out infinite; }}
+.tc-card.run::after {{ content:""; position:absolute; inset:0; background:linear-gradient(100deg, transparent 30%,
+  rgba(15,118,110,0.10) 50%, transparent 70%); animation:tc-scan 1.1s linear infinite; }}
+@keyframes tc-pulse {{ 0% {{ box-shadow:0 0 0 0 rgba(15,118,110,0.45); }} 100% {{ box-shadow:0 0 0 10px rgba(15,118,110,0); }} }}
+@keyframes tc-scan {{ from {{ transform:translateX(-100%); }} to {{ transform:translateX(100%); }} }}
+/* finished states pop in */
+.tc-card.flagged, .tc-card.clear, .tc-card.info {{ animation:tc-pop 260ms ease-out both; }}
+@keyframes tc-pop {{ from {{ transform:scale(0.97); opacity:0.6; }} to {{ transform:scale(1); opacity:1; }} }}
+.tc-card.flagged {{ border-color:#F3C6C1; background:#FFF6F5; }}
+.tc-card.flagged::before {{ content:"!"; border-color:{VERDICT['high']}; background:{VERDICT['high']}; color:#FFFFFF;
+  font-weight:800; font-size:0.75rem; }}
+.tc-card.clear::before {{ content:"✓"; border-color:{VERDICT['low']}; background:{VERDICT['low']}; color:#FFFFFF;
+  font-weight:800; font-size:0.72rem; }}
+.tc-card.info::before {{ content:"i"; border-color:#52607A; color:#52607A; font-weight:800; font-size:0.72rem; }}
+.tc-card.flagged b::after {{ content:"  flagged"; color:{VERDICT['high']}; font-family:'Atkinson Hyperlegible', sans-serif;
+  font-size:0.75rem; font-weight:700; }}
+.tc-card.clear b::after {{ content:"  clear"; color:{VERDICT['low']}; font-family:'Atkinson Hyperlegible', sans-serif;
+  font-size:0.75rem; font-weight:700; }}
+@media (prefers-reduced-motion: reduce) {{
+  .tc-card.run::before, .tc-card.run::after, .tc-card.flagged, .tc-card.clear, .tc-card.info {{ animation:none; }}
+}}
+</style>
+"""
+
+THINK_LABELS = {"Reading the message": "Reading the message", "Weighing the evidence": "Weighing the evidence"}
+
+
+class Board:
+    """Keeps the state of the investigation and renders it as HTML after every event."""
+
+    def __init__(self, case: str):
+        self.case = case
+        self.cards: list[dict] = []     # {key, title, state, text}
+        self.closed = False
+        self.verdict_level = None
+
+    def _card(self, key):
+        for c in self.cards:
+            if c["key"] == key:
+                return c
+        return None
+
+    def _finish_running(self):
+        for c in self.cards:
+            if c["state"] == "run" and c["key"].startswith("think:"):
+                t = c["title"]
+                c["state"] = "info"
+                c["text"] = ("Understood the message and picked the checks to run" if t.startswith("Reading") else
+                             "Combined every finding into one verdict" if t.startswith("Weighing") else
+                             "Picked the next check" if t.startswith("Deciding") else "Complete")
+
+    def update(self, event: dict) -> None:
+        k, n = event["kind"], event["name"]
+        if k == "thinking":
+            self._finish_running()
+            text = event["text"]
+            self.cards.append({"key": f"think:{len(self.cards)}", "title": text, "state": "run",
+                               "text": "The AI is deciding what to check" if "Deciding" in text or "Reading" in text
+                               else "Combining all the findings"})
+        elif k == "tool_start" and n in TOOL_LABELS:
+            self._finish_running()
+            if not self._card(n):
+                self.cards.append({"key": n, "title": TOOL_LABELS[n][1], "state": "run", "text": TOOL_LABELS[n][0] + "…"})
+        elif k == "tool_done" and n in TOOL_LABELS:
+            c = self._card(n)
+            state, text = summarize(n, event["result"])
+            if c:
+                c["state"], c["text"] = state, text
+        elif k == "verdict":
+            self._finish_running()
+
+    def close(self, level: str) -> None:
+        self._finish_running()
+        self.closed, self.verdict_level = True, level
+
+    def html(self) -> str:
+        done = sum(1 for c in self.cards if c["state"] != "run")
+        total = max(len(self.cards), 1)
+        pct = 100 if self.closed else min(95, int(100 * done / (total + 1)))
+        flags = sum(1 for c in self.cards if c["state"] == "flagged")
+        if self.closed:
+            head = f"Case closed: {flags} of {sum(1 for c in self.cards if not c['key'].startswith('think:'))} checks raised a flag"
+        else:
+            running = next((c["title"] for c in self.cards if c["state"] == "run"), "choosing the next check" if self.cards else "opening the case")
+            head = f"Investigating… {running}"
+        cards = "".join(
+            f'<div class="tc-card {c["state"]}"><b>{html.escape(c["title"])}</b><span>{html.escape(c["text"])}</span></div>'
+            for c in self.cards)
+        return (f'<div class="tc-board" role="status" aria-live="polite"><div class="tc-board-head"><b>{html.escape(head)}</b>'
+                f'<span>Case {self.case}</span></div><div class="tc-progress"><i style="width:{pct}%"></i></div>'
+                f'<div class="tc-cards">{cards}</div></div>')

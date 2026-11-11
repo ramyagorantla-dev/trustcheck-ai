@@ -10,6 +10,7 @@ from .email_headers import analyze_email_headers
 from .injection import detect_prompt_injection
 from .knowledge import search_scam_knowledge
 from .links import analyze_links
+from .normalize import detect_obfuscation, normalize
 from .offer_letter import check_job_offer
 from .text_signals import scan_text_signals
 
@@ -97,4 +98,5 @@ ALL_TOOL_NAMES = [t["function"]["name"] for t in TOOL_SCHEMAS]
 __all__ = [
     "TOOL_SCHEMAS", "run_tool", "ALL_TOOL_NAMES", "analyze_links", "analyze_email_headers",
     "check_job_offer", "scan_text_signals", "search_scam_knowledge", "detect_prompt_injection",
+    "detect_obfuscation", "normalize",
 ]

@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 
 from .common import Finding, result
+from .normalize import normalize
 
 INJECTION_PATTERNS = [
     r"ignore (all |any )?(previous|prior|above) (instructions|rules|prompts)",
@@ -23,6 +24,7 @@ RX = [re.compile(p, re.I | re.S) for p in INJECTION_PATTERNS]
 
 
 def detect_prompt_injection(text: str) -> dict:
+    text = normalize(text)
     hits = []
     for rx in RX:
         m = rx.search(text or "")

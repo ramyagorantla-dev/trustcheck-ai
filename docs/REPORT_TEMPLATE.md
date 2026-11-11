@@ -32,6 +32,14 @@
 - `results/metrics.csv` table + `confusion_matrices.png`.
 - Tools vs no tools; small vs large model; latency.
 
+## 6b. Robustness: red-team lab and defense ablation
+- Threat model: scammers disguise trigger words (leetspeak, homoglyphs, zero-width characters), reword politely,
+  drop links, or hide instructions to AI tools.
+- Method: 7 deterministic attacks (fixed seed) on all scam messages; metric = attack success rate (ASR).
+- Ablation: rules with vs without the normalization defense; then LLM-only vs agent under the same attacks.
+- Key findings: defense cuts ASR for character-level attacks (e.g. leetspeak 36% → 0%); wording-level attacks
+  remain hard for rules, which motivates the LLM agent. Include `results/redteam.md` and the dashboard chart.
+
 ## 7. Success and failure analysis (R7)
 - 3 successes with agent traces (screenshots from the app).
 - 3–5 failures from `results/failures.md`, each with *why* (e.g. legit 2FA text flagged because it mentions "code"; BEC email passes SPF because it's a real Outlook account).

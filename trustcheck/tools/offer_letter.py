@@ -12,6 +12,7 @@ import re
 
 from .. import config
 from .common import Finding, find_emails, registered_domain, result
+from .normalize import normalize
 
 COMPANY_RE = re.compile(
     r"(?:offer (?:of employment )?(?:from|with|at)|welcome to|join(?:ing)?|position (?:at|with)|"
@@ -27,14 +28,15 @@ def _company_tokens(name: str) -> set[str]:
 
 def check_job_offer(text: str, company_name: str = "") -> dict:
     findings: list[Finding] = []
-    t = text or ""
+    raw = text or ""
+    t = normalize(raw)
 
     if not company_name:
         m = COMPANY_RE.search(t)
         company_name = m.group(1).strip() if m else ""
     tokens = _company_tokens(company_name)
 
-    emails = find_emails(t)
+    emails = find_emails(raw)
     for e in emails:
         dom = registered_domain(e)
         if dom in config.FREE_EMAIL_PROVIDERS:

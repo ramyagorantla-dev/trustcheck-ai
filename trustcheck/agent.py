@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field
 
 from . import config
 from .llm import LLMError, OllamaClient, make_client
-from .tools import TOOL_SCHEMAS, detect_prompt_injection, run_tool
+from .tools import TOOL_SCHEMAS, detect_obfuscation, detect_prompt_injection, normalize, run_tool
 from .contacts import build_contacts, learn_more, link_checkers
 from .tools.common import find_urls
 from .tools.email_headers import looks_like_email, parse_email
@@ -174,6 +174,16 @@ def _finalize(data: dict | None, results: list[dict], injection: bool, **kw) -> 
     )
 
 
+def _emit(cb, kind: str, name: str = "", result: dict | None = None, text: str = ""):
+    """Send a progress event to the UI (live investigation view). Never breaks the analysis."""
+    if cb is None:
+        return
+    try:
+        cb({"kind": kind, "name": name, "result": result or {}, "text": text})
+    except Exception:
+        pass
+
+
 def attach_contacts(report: "Report", raw: str) -> "Report":
     """Add official contact info for organizations named in the message (from a checked list, never the LLM)."""
     company = None
@@ -194,24 +204,35 @@ class TrustCheckAgent:
         self.client = client or make_client()
         self.max_steps = max_steps or config.MAX_AGENT_STEPS
 
-    def analyze(self, raw: str, input_type: str | None = None) -> Report:
+    def analyze(self, raw: str, input_type: str | None = None, on_event=None) -> Report:
         t0 = time.time()
         itype = detect_input_type(raw, input_type)
         shown, ctx = _prepare(raw, itype)
 
-        guard = detect_prompt_injection(raw)          # guardrail always runs (not an LLM choice)
+        _emit(on_event, "start", text=itype)
+        _emit(on_event, "tool_start", "detect_prompt_injection")
+        guard = detect_prompt_injection(raw)          # guardrails always run (not an LLM choice)
+        _emit(on_event, "tool_done", "detect_prompt_injection", guard)
         injection = guard["detected"]
-        results: list[dict] = [guard] if injection else []
+        _emit(on_event, "tool_start", "detect_obfuscation")
+        obf = detect_obfuscation(raw)
+        _emit(on_event, "tool_done", "detect_obfuscation", obf)
+        results: list[dict] = ([guard] if injection else []) + ([obf] if obf["detected"] else [])
+        note = ""
+        if obf["detected"]:
+            note = ("\nSecurity note: this message uses filter-evasion tricks (" +
+                    "; ".join(f["signal"] for f in obf["findings"]) + "). Text below has been cleaned.\n")
         trace: list[dict] = []
         tools_used: list[str] = []
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Input type (auto-detected): {itype}\n\n<message>\n{shown[:6000]}\n</message>"},
+            {"role": "user", "content": f"Input type (auto-detected): {itype}{note}\n\n<message>\n{normalize(shown)[:6000]}\n</message>"},
         ]
         final = None
         try:
             for step in range(self.max_steps):
+                _emit(on_event, "thinking", text="Deciding which checks to run next" if step else "Reading the message")
                 resp = self.client.chat(messages, tools=TOOL_SCHEMAS)
                 trace.append({"step": step + 1, "thought": resp.content[:500],
                               "tool_calls": [c.get("function", {}).get("name") for c in resp.tool_calls],
@@ -225,7 +246,9 @@ class TrustCheckAgent:
                     name, args = fn.get("name", ""), fn.get("arguments") or {}
                     if isinstance(args, str):
                         args = parse_json(args) or {}
+                    _emit(on_event, "tool_start", name)
                     out = run_tool(name, args, ctx)
+                    _emit(on_event, "tool_done", name, out)
                     results.append(out)
                     tools_used.append(name)
                     tool_msg = {"role": "tool", "content": json.dumps(out)[:3000]}
@@ -233,23 +256,26 @@ class TrustCheckAgent:
                         tool_msg["tool_call_id"] = call["id"]
                     messages.append(tool_msg)
             if final is None:
+                _emit(on_event, "thinking", text="Weighing the evidence")
                 resp = self.client.chat(messages + [{"role": "user", "content": FINAL_REMINDER}], json_mode=True)
                 final = parse_json(resp.content)
                 trace.append({"step": "final", "thought": resp.content[:500], "tool_calls": []})
         except LLMError as e:
-            rep = rules_only(raw, itype)
+            _emit(on_event, "thinking", text="AI unavailable, switching to rule-based checks")
+            rep = rules_only(raw, itype, on_event=on_event)
             rep.error = str(e)
             rep.mode = "rules_fallback"
             return rep
 
         rep = _finalize(final, results, injection, input_type=itype, tools_used=tools_used,
                         trace=trace, latency_s=round(time.time() - t0, 2), mode="agent")
+        _emit(on_event, "verdict", text=rep.risk_level)
         return attach_contacts(rep, raw)
 
 
 # ---------------------------------------------------------------- baselines
 
-def llm_only(raw: str, client: OllamaClient | None = None, input_type: str | None = None) -> Report:
+def llm_only(raw: str, client: OllamaClient | None = None, input_type: str | None = None, on_event=None) -> Report:
     """Same model and prompt, but NO tools. Used to measure what tools add."""
     client = client or make_client()
     t0 = time.time()
@@ -257,9 +283,10 @@ def llm_only(raw: str, client: OllamaClient | None = None, input_type: str | Non
     shown, _ = _prepare(raw, itype)
     prompt = SYSTEM_PROMPT.split("2. Use tools")[0] + "You have no tools; decide from the text alone.\n\n" + \
         SYSTEM_PROMPT[SYSTEM_PROMPT.index("3. You cannot"):]
+    _emit(on_event, "thinking", text="Reading the message (AI only, no checks)")
     resp = client.chat([
         {"role": "system", "content": prompt},
-        {"role": "user", "content": f"<message>\n{shown[:6000]}\n</message>\n\n{FINAL_REMINDER}"},
+        {"role": "user", "content": f"<message>\n{normalize(shown)[:6000]}\n</message>\n\n{FINAL_REMINDER}"},
     ], json_mode=True)
     data = parse_json(resp.content) or {}
     level = str(data.get("risk_level", "medium")).lower()
@@ -273,7 +300,7 @@ def llm_only(raw: str, client: OllamaClient | None = None, input_type: str | Non
     return attach_contacts(rep, raw)
 
 
-def rules_only(raw: str, input_type: str | None = None) -> Report:
+def rules_only(raw: str, input_type: str | None = None, on_event=None) -> Report:
     """All tools, no LLM. Deterministic baseline and offline fallback."""
     t0 = time.time()
     itype = detect_input_type(raw, input_type)
@@ -283,8 +310,16 @@ def rules_only(raw: str, input_type: str | None = None) -> Report:
         names.append("analyze_email_headers")
     if itype == "job_offer" or re.search(r"\b(job|offer|recruit|hiring|interview|position)\b", raw, re.I):
         names.append("check_job_offer")
-    guard = detect_prompt_injection(raw)
-    results = [run_tool(n, {}, ctx) for n in names] + [guard]
+    _emit(on_event, "start", text=itype)
+    results = []
+    for n, fn in ([("detect_prompt_injection", lambda: detect_prompt_injection(raw)),
+                   ("detect_obfuscation", lambda: detect_obfuscation(raw))] +
+                  [(n, lambda n=n: run_tool(n, {}, ctx)) for n in names]):
+        _emit(on_event, "tool_start", n)
+        out = fn()
+        results.append(out)
+        _emit(on_event, "tool_done", n, out)
+    guard = results[0]
     score = tool_score_from(results)
     if guard["detected"]:
         score = max(score, 85)
@@ -293,7 +328,9 @@ def rules_only(raw: str, input_type: str | None = None) -> Report:
         for f in r["findings"]:
             if f["severity"] in ("high", "medium", "low") and f["detail"] not in evidence:
                 evidence.append(f["detail"])
+    _emit(on_event, "tool_start", "search_scam_knowledge")
     kb = run_tool("search_scam_knowledge", {"query": ctx["text"][:400]}, ctx)
+    _emit(on_event, "tool_done", "search_scam_knowledge", kb)
     top = kb["matches"][0]["title"] if kb["matches"] and score >= 40 else "none detected"
     rep = Report(
         risk_level=level_from_score(score), risk_score=score, is_scam=score >= 50, scam_type=top,

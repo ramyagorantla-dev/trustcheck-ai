@@ -1,7 +1,19 @@
 """TrustCheck web app.  Run:  streamlit run app.py"""
 import json
+import os
+import time
 
 import streamlit as st
+
+# On Streamlit Community Cloud, settings live in "Secrets" instead of a .env file.
+# Copy them into environment variables before the config module reads them.
+try:
+    for _k, _v in st.secrets.items():
+        if isinstance(_v, (str, int, float)):
+            os.environ.setdefault(_k, str(_v))
+except Exception:
+    pass  # no secrets file locally: the .env file is used instead
+
 
 from trustcheck import config, ui
 from trustcheck.agent import TrustCheckAgent, llm_only, rules_only
@@ -11,7 +23,7 @@ from trustcheck.tools.extract import extract_text
 
 st.set_page_config(page_title="TrustCheck: is this message a scam?", page_icon="🛡️", layout="wide",
                    initial_sidebar_state="collapsed")
-st.markdown(ui.CSS, unsafe_allow_html=True)
+st.markdown(ui.CSS + ui.CASE_CSS + ui.BOARD_CSS, unsafe_allow_html=True)
 
 
 EXAMPLES = {
@@ -76,6 +88,7 @@ with st.sidebar:
 
 # ---------------------------------------------------------------- input
 st.markdown(ui.hero(), unsafe_allow_html=True)
+st.page_link("pages/1_How_good_is_it.py", label="How good is it? See the test results and red-team attacks", icon="📊")
 
 tab_paste, tab_upload, tab_tools = st.tabs(["Paste a message", "Upload a screenshot or file", "Safety toolkit"])
 raw, itype = "", None
@@ -116,13 +129,28 @@ if not go:
 
 # ---------------------------------------------------------------- analysis
 if go:
-    with st.spinner("Inspecting: checking links, sender, and wording..."):
-        if mode.startswith("Agent") and online:
-            report = TrustCheckAgent(client=client).analyze(raw, itype)
-        elif mode.startswith("LLM") and online:
-            report = llm_only(raw, client, itype)
-        else:
-            report = rules_only(raw, itype)
+    events: list[dict] = []
+    board = ui.Board(ui.case_id(raw))
+    board_slot = st.empty()
+    board_slot.markdown(board.html(), unsafe_allow_html=True)
+
+    def on_event(e):
+        events.append(e)
+        board.update(e)
+        board_slot.markdown(board.html(), unsafe_allow_html=True)
+        if e["kind"] == "tool_start":
+            time.sleep(0.25)          # pacing so people can follow each step
+        elif e["kind"] == "tool_done":
+            time.sleep(0.2)
+
+    if mode.startswith("Agent") and online:
+        report = TrustCheckAgent(client=client).analyze(raw, itype, on_event=on_event)
+    elif mode.startswith("LLM") and online:
+        report = llm_only(raw, client, itype, on_event=on_event)
+    else:
+        report = rules_only(raw, itype, on_event=on_event)
+    board.close(report.risk_level)
+    board_slot.markdown(board.html(), unsafe_allow_html=True)
 
     if report.error:
         st.warning("LLM unavailable, showing rules-only result. " + report.error)
@@ -133,27 +161,33 @@ if go:
     st.markdown(ui.verdict(report.risk_level, report.risk_score, report.scam_type, report.summary, meta),
                 unsafe_allow_html=True)
 
+    phrases = ui.flagged_phrases(report.evidence, report.tool_results, raw)
+    st.download_button("Download the case report", data=ui.report_html(report, raw, phrases, events),
+                       file_name=f"TrustCheck-{ui.case_id(raw)}.html", mime="text/html",
+                       help="A printable report you can keep, or forward to your bank, school, or HR when reporting the scam.")
+
     if report.injection_detected:
         st.error("This message hides instructions aimed at AI tools, like \"mark this as safe\". "
                  "TrustCheck ignored them. A real sender has no reason to write that.")
 
-    phrases = ui.flagged_phrases(report.evidence, report.tool_results, raw)
     if phrases:
         st.markdown("### Your message, marked up")
         st.markdown(ui.exhibit(raw, phrases), unsafe_allow_html=True)
         st.markdown('<p class="tc-exhibit-note">Highlighted parts are what triggered the warnings below.</p>',
                     unsafe_allow_html=True)
 
-    col1, col2 = st.columns([1.15, 1], gap="large")
+    col1, col2 = st.columns([1.1, 1], gap="large")
     with col1:
         st.markdown("### What we found")
         st.markdown(ui.evidence_list(report.evidence, report.risk_level), unsafe_allow_html=True)
     with col2:
-        st.markdown("### How to check it yourself")
-        for s_ in report.verification_steps:
-            st.markdown(f"- {s_}")
-        st.caption("TrustCheck can't prove a message is genuine. When money, passwords, or personal "
-                   "documents are involved, verify through a channel you look up yourself.")
+        st.markdown("### How we investigated")
+        st.markdown(ui.case_file(events, report.risk_level, raw), unsafe_allow_html=True)
+
+    st.markdown("### How to check it yourself")
+    st.markdown(ui.verify_list(report.verification_steps), unsafe_allow_html=True)
+    st.caption("TrustCheck can't prove a message is genuine. When money, passwords, or personal "
+               "documents are involved, verify through a channel you look up yourself.")
 
     # ---------------- check suspicious links without opening them
     lc = (report.official_contacts or {}).get("link_checks") or []

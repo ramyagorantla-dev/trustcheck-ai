@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 
 from .common import Finding, result
+from .normalize import normalize
 
 # (signal, severity, regex, explanation)
 PATTERNS = [
@@ -70,6 +71,7 @@ COMPILED = [(s, sev, re.compile(rx, re.I | re.M), why) for s, sev, rx, why in PA
 
 
 def scan_text_signals(text: str) -> dict:
+    text = normalize(text)          # undo g1ft c4rd / invisible-character tricks first
     findings = []
     for signal, sev, rx, why in COMPILED:
         m = rx.search(text or "")
