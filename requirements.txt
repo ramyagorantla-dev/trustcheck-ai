@@ -1,0 +1,22 @@
+# Core (all free / open source)
+requests>=2.31
+rapidfuzz>=3.6
+tldextract>=5.1
+scikit-learn>=1.4
+pandas>=2.1
+matplotlib>=3.8
+streamlit>=1.36
+pytest>=8.0
+
+# File reading (screenshots, PDFs)
+pillow>=10.0
+pytesseract>=0.3.10      # also install the Tesseract program (see README)
+pypdf>=4.0
+pypdfium2>=4.0
+
+# Optional: domain age lookups
+python-whois>=0.9
+
+# Optional: better RAG retrieval (falls back to TF-IDF if missing)
+# chromadb>=0.5
+# sentence-transformers>=3.0

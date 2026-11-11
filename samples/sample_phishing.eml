@@ -1,0 +1,13 @@
+From: "PayPal Support" <service@paypa1-secure.xyz>
+To: student@university.edu
+Subject: Your account has been limited
+Date: Mon, 9 Nov 2026 10:15:00 -0500
+Reply-To: paypal.help.desk@gmail.com
+Authentication-Results: mx.university.edu; spf=fail dkim=none dmarc=fail
+Content-Type: text/plain; charset=utf-8
+
+Dear customer,
+
+We noticed unusual activity. Your account will be suspended within 24 hours unless you verify your account immediately at https://paypa1-secure.xyz/login
+
+PayPal Security Team
